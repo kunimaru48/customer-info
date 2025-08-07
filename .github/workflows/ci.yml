@@ -6,12 +6,45 @@ on:
   pull_request:
 
 jobs:
-  build:
+  build-and-auth:
     runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write     # GitHub OIDC トークン発行を許可
+      contents: read      # リポジトリの内容にアクセス可能
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install -r requirements.txt
-      - run: python -m compileall app
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run syntax check (compileall)
+        run: python -m compileall app
+
+      - name: Run flake8 lint (optional)
+        run: |
+          pip install flake8
+          flake8 app || true  # ワーニング止まりで失敗させない
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubOIDCRole
+          role-session-name: GitHubActionsSession
+          aws-region: ap-northeast-1
+
+      - name: Verify AWS Identity
+        run: aws sts get-caller-identity
+
+      - name: Try CodePipeline access (expected to 404)
+        continue-on-error: true
+        run: |
+          echo "Trying to access a non-existent pipeline (dry-run test)"
+          aws codepipeline get-pipeline --name dummy-pipeline
