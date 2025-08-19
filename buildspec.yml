@@ -2,7 +2,7 @@ version: 0.2
 
 env:
   variables:
-    ECR_REPO: customer-info/app
+    ECR_REPO: customer-info/app   # ECR リポジトリ名
   git-credential-helper: yes
 
 phases:
@@ -17,6 +17,7 @@ phases:
       - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
       - REGION=${AWS_DEFAULT_REGION:-ap-northeast-1}
       - aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com
+
       - echo "[pre_build] resolve tags"
       - COMMIT_SHA=$(echo "${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual}" | cut -c1-7)
       - BRANCH_NAME=${CODEBUILD_WEBHOOK_BASE_REF##*/}; BRANCH_NAME=${BRANCH_NAME:-${CODEBUILD_SOURCE_VERSION}}
@@ -29,9 +30,23 @@ phases:
 
   build:
     commands:
-      - echo "[build] docker build"
-      - docker build -t ${ECR_REPO}:${IMAGE_TAG} .
-      - docker tag ${ECR_REPO}:${IMAGE_TAG} ${IMAGE_URI}
+      - echo "[build] sanity check Dockerfile path"
+      # Dockerfile がリポジトリ直下でない場合は DOCKER_CONTEXT / DOCKERFILE を環境変数で渡せるように
+      - DOCKER_CONTEXT="${DOCKER_CONTEXT:-.}"
+      - DOCKERFILE="${DOCKERFILE:-${DOCKER_CONTEXT}/Dockerfile}"
+
+      - echo "[build] show Dockerfile header"; head -n 5 "${DOCKERFILE}" || true
+      - echo "[build] check FROM base image"
+      - grep -nE '^FROM ' "${DOCKERFILE}"
+
+      # 旧ベースの使用を検知したら即失敗（見落とし防止）
+      - if grep -qE '^FROM[[:space:]]+python:3\.11-slim' "${DOCKERFILE}"; then
+          echo "ERROR: Dockerfile still uses Docker Hub base image" && exit 1;
+        fi
+
+      - echo "[build] docker build with explicit -f and --pull"
+      - docker build --pull -f "${DOCKERFILE}" -t "${ECR_REPO}:${IMAGE_TAG}" "${DOCKER_CONTEXT}"
+      - docker tag "${ECR_REPO}:${IMAGE_TAG}" "${IMAGE_URI}"
 
   post_build:
     commands:
@@ -39,7 +54,7 @@ phases:
       - echo "[post_build] push"
       - docker push "${IMAGE_URI}"
 
-      - echo "[post_build] generate CodeDeploy artifacts"
+      - echo "[post_build] generate CodeDeploy artifacts (appspec.yaml, taskdef.json)"
       - cat > appspec.yaml <<'APP'
       version: 1
       Resources:
@@ -92,22 +107,26 @@ phases:
       }
       JSON
 
-      # 生成確認（ここで止まれば jq まで到達しない）
+      - echo "[post_build] sanity check"
       - ls -l appspec.yaml taskdef.json
-      - jq -e . taskdef.json > /dev/null
-
-      # CodeBuild 環境変数 EXEC_ROLE_ARN が渡っているかの確認（空なら即エラー）
+      - jq --version || { echo "jq not found"; exit 1; }
+      - echo "IMAGE_URI=${IMAGE_URI}"
       - echo "EXEC_ROLE_ARN=${EXEC_ROLE_ARN:-<empty>}"
+      - echo "REGION=${REGION:-${AWS_DEFAULT_REGION:-<empty>}}"
+      - jq -e . taskdef.json > /dev/null  # JSONとして正しいか検証
+
+      # EXEC_ROLE_ARN が空なら明示的に失敗（後段で曖昧に落ちないように）
       - test -n "${EXEC_ROLE_ARN:-}" || { echo "EXEC_ROLE_ARN is empty; set it in CodeBuild env"; exit 1; }
 
-      - echo "[post_build] inject image into taskdef.json"
+      - echo "[post_build] inject image into containerDefinitions"
       - jq --arg IMG "${IMAGE_URI}" \
            '(.containerDefinitions[] | select(.name=="app") | .image) = $IMG' \
            taskdef.json > taskdef.tmp && mv taskdef.tmp taskdef.json
       - jq -e . taskdef.json > /dev/null
 
       - echo "[post_build] set executionRoleArn"
-      - jq --arg EXEC "${EXEC_ROLE_ARN}" '.executionRoleArn = $EXEC' \
+      - jq --arg EXEC "${EXEC_ROLE_ARN}" \
+           '.executionRoleArn = $EXEC' \
            taskdef.json > taskdef.tmp && mv taskdef.tmp taskdef.json
       - jq -e . taskdef.json > /dev/null
 
@@ -129,3 +148,4 @@ artifacts:
 cache:
   paths:
     - '/root/.cache/pip/**/*'
+
