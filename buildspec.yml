@@ -34,81 +34,79 @@ phases:
       - docker build -t ${ECR_REPO}:${IMAGE_TAG} .
       - docker tag ${ECR_REPO}:${IMAGE_TAG} ${IMAGE_URI}
 
-  post_build:
-    commands:
-      - echo "[post_build] push"
-      - docker push ${IMAGE_URI}
+　post_build:
+　  commands:
+ 　   - echo "[post_build] push"
+ 　   - docker push ${IMAGE_URI}
 
-      - echo "[post_build] generate CodeDeploy artifacts (appspec.yaml, taskdef.json)"
-      # appspec.yaml
-      - cat > appspec.yaml <<'APP'
-      version: 1
-      Resources:
-        - TargetService:
-            Type: AWS::ECS::Service
-            Properties:
-              TaskDefinition: taskdef.json
-              LoadBalancerInfo:
-                ContainerName: app
-                ContainerPort: 80
-      APP
+  　  - echo "[post_build] generate CodeDeploy artifacts (appspec.yaml, taskdef.json)"
+   　 # appspec.yaml 生成
+   　 - cat > appspec.yaml <<'APP'
+　    version: 1
+    　Resources:
+  　    - TargetService:
+    　      Type: AWS::ECS::Service
+      　    Properties:
+        　    TaskDefinition: taskdef.json
+          　  LoadBalancerInfo:
+            　  ContainerName: app
+            　  ContainerPort: 80
+    　APP
 
-      # taskdef.json
-      - cat > taskdef.json <<'JSON'
-      {
-        "family": "customer-info",
-        "networkMode": "awsvpc",
-        "requiresCompatibilities": ["FARGATE"],
-        "cpu": "256",
-        "memory": "512",
-        "executionRoleArn": "REPLACE_EXEC_ROLE_ARN",
-        "containerDefinitions": [
-          {
-            "name": "app",
-            "image": "REPLACE_ME",
-            "essential": true,
-            "portMappings": [{ "containerPort": 80, "protocol": "tcp" }],
-            "logConfiguration": {
-              "logDriver": "awslogs",
-              "options": {
-                "awslogs-group": "/ecs/customer-info",
-                "awslogs-region": "ap-northeast-1",
-                "awslogs-stream-prefix": "ecs"
-              }
-            },
-            "environment": [
-              { "name": "DB_HOST", "value": "REPLACE_DB_HOST" },
-              { "name": "DB_USER", "value": "REPLACE_DB_USER" },
-              { "name": "DB_PASSWORD", "value": "REPLACE_DB_PASSWORD" },
-              { "name": "DB_NAME", "value": "REPLACE_DB_NAME" }
-            ],
-            "healthCheck": {
-              "command": ["CMD-SHELL", "curl -f http://localhost/healthcheck || exit 1"],
-              "interval": 30,
-              "timeout": 5,
-              "retries": 3,
-              "startPeriod": 10
-            }
-          }
-        ]
-      }
-      JSON
+　    # taskdef.json 生成
+  　  - cat > taskdef.json <<'JSON'
+    　{
+      　"family": "customer-info",
+      　"networkMode": "awsvpc",
+      　"requiresCompatibilities": ["FARGATE"],
+      　"cpu": "256",
+      　"memory": "512",
+      　"executionRoleArn": "REPLACE_EXEC_ROLE_ARN",
+      　"containerDefinitions": [
+      　  {
+      　    "name": "app",
+      　    "image": "REPLACE_ME",
+      　    "essential": true,
+    　　    "portMappings": [{ "containerPort": 80, "protocol": "tcp" }],
+    　      "logConfiguration": {
+    　        "logDriver": "awslogs",
+    　        "options": {
+    　          "awslogs-group": "/ecs/customer-info",
+    　          "awslogs-region": "ap-northeast-1",
+    　          "awslogs-stream-prefix": "ecs"
+      　      }
+        　  },
+          　"environment": [
+　            { "name": "DB_HOST", "value": "REPLACE_DB_HOST" },
+　            { "name": "DB_USER", "value": "REPLACE_DB_USER" },
+　            { "name": "DB_PASSWORD", "value": "REPLACE_DB_PASSWORD" },
+　            { "name": "DB_NAME", "value": "REPLACE_DB_NAME" }
+　          ],
+  　        "healthCheck": {
+  　          "command": ["CMD-SHELL", "curl -f http://localhost/healthcheck || exit 1"],
+    　        "interval": 30,
+      　      "timeout": 5,
+        　    "retries": 3,
+          　  "startPeriod": 10
+　          }
+  　      }
+    　  ]
+    　}
+    　JSON
 
-      # ここで存在とサイズをチェック（無ければ即中断）
-      - ls -l appspec.yaml taskdef.json || true
-      - test -s taskdef.json || { echo "taskdef.json not created"; exit 1; }
+　    # 生成を確認（無ければ即中断）
+  　  - ls -l appspec.yaml taskdef.json || true
+    　- test -s taskdef.json || { echo "taskdef.json not created"; exit 1; }
 
-      # BuildStack で環境変数 EXEC_ROLE_ARN を渡している前提
-      # REGION は pre_build で設定済み（AWS_DEFAULT_REGION から）
-      - echo "[post_build] inject image/roles into taskdef.json"
-      - jq --arg IMG "${IMAGE_URI}" --arg EXEC "${EXEC_ROLE_ARN}" --arg REGION "$REGION" \
-          '.containerDefinitions |= (map(if .name=="app" then .image=$IMG else . end))
-           | .executionRoleArn=$EXEC
-           | .containerDefinitions[0].logConfiguration.options["awslogs-region"]=$REGION' \
-          taskdef.json > taskdef.tmp && mv taskdef.tmp taskdef.json
+　    # jq でイメージURIとロール/リージョンを注入
+  　  - echo "[post_build] inject image/roles into taskdef.json"
+    　- jq --arg IMG "${IMAGE_URI}" --arg EXEC "${EXEC_ROLE_ARN}" --arg REGION "$REGION" \
+      　  '.containerDefinitions |= (map(if .name=="app" then .image=$IMG else . end))
+        　 | .executionRoleArn=$EXEC
+    　     | .containerDefinitions[0].logConfiguration.options["awslogs-region"]=$REGION' \
+      　  taskdef.json > taskdef.tmp && mv taskdef.tmp taskdef.json
 
-      # 仕上がりの確認（先頭だけ）
-      - head -n 40 taskdef.json
+　    - head -n 40 taskdef.json
 
 artifacts:
   files:
