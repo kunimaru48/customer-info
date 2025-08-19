@@ -1,4 +1,5 @@
 version: 0.2
+
 env:
   variables:
     ECR_REPO: "customer-info/app"
@@ -14,13 +15,7 @@ phases:
 
       - echo "[pre_build] resolve tags"
       - COMMIT_SHA=$(echo "${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual}" | cut -c1-7)
-
-      # ← 問題の3行を1ブロックに集約（YAMLが確実に「1つの文字列」として扱う）
-      - |
-        BRANCH_NAME=${CODEBUILD_WEBHOOK_BASE_REF##*/}         # refs/heads/xxx → xxx
-        BRANCH_NAME=${BRANCH_NAME:-${CODEBUILD_SOURCE_VERSION}}
-        BRANCH_NAME=${BRANCH_NAME##*/}
-
+      - BRANCH_NAME=${CODEBUILD_WEBHOOK_BASE_REF##*/}; BRANCH_NAME=${BRANCH_NAME:-${CODEBUILD_SOURCE_VERSION}}; BRANCH_NAME=${BRANCH_NAME##*/}
       - SAFE_BRANCH=$(echo "${BRANCH_NAME:-manual}" | tr '/_' '-' | tr -cd '[:alnum:]-')
       - TS=$(date +%Y%m%d%H%M%S)
       - IMAGE_TAG="${SAFE_BRANCH}-${COMMIT_SHA}-${TS}"
