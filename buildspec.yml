@@ -15,9 +15,9 @@ phases:
       - echo "[pre_build] resolve tags"
       - COMMIT_SHA=$(echo "${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual}" | cut -c1-7)
 
-      - BRANCH_NAME=${CODEBUILD_WEBHOOK_BASE_REF##*/}
-      - BRANCH_NAME=${BRANCH_NAME:-${CODEBUILD_SOURCE_VERSION}}
-      - BRANCH_NAME=${BRANCH_NAME##*/}
+      - 'BRANCH_NAME=${CODEBUILD_WEBHOOK_BASE_REF##*/}'
+      - 'BRANCH_NAME=${BRANCH_NAME:-${CODEBUILD_SOURCE_VERSION}}'
+      - 'BRANCH_NAME=${BRANCH_NAME##*/}'
 
       - SAFE_BRANCH=$(echo "${BRANCH_NAME:-manual}" | tr '/_' '-' | tr -cd '[:alnum:]-')
       - TS=$(date +%Y%m%d%H%M%S)
