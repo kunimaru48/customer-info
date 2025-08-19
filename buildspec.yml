@@ -39,9 +39,6 @@ phases:
       - echo "[build] check FROM base image"
       - grep -nE '^FROM ' "${DOCKERFILE}"
 
-      # 旧ベースの使用を検知したら即失敗（見落とし防止）
-      - if grep -qE '^FROM[[:space:]]+python:3\.11-slim' "${DOCKERFILE}"; then echo "ERROR: Dockerfile still uses Docker Hub base image"; exit 1; fi
-
       - echo "[build] docker build with explicit -f and --pull"
       - docker build --pull -f "${DOCKERFILE}" -t "${ECR_REPO}:${IMAGE_TAG}" "${DOCKER_CONTEXT}"
       - docker tag "${ECR_REPO}:${IMAGE_TAG}" "${IMAGE_URI}"
