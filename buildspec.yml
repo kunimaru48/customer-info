@@ -28,24 +28,43 @@ phases:
       - IMAGE_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}"
       - echo "IMAGE_URI=${IMAGE_URI}"
 
+      # （重要）Docker 環境の可用性＆buildx 初期化
+      - echo "[pre_build] check docker availability"
+      - docker version || true
+      - docker info || true
+      - echo "[pre_build] DOCKER_* env (for debugging)"; env | grep '^DOCKER_' || true
+      - echo "[pre_build] docker context/buildx"; docker context ls || true; docker buildx ls || true
+      - |
+        if ! docker buildx inspect cbuilder >/dev/null 2>&1; then
+          echo "[pre_build] creating buildx builder 'cbuilder'..."
+          docker buildx create --name cbuilder --use || { echo "buildx create failed"; exit 1; }
+        else
+          docker buildx use cbuilder
+        fi
+      - docker buildx ls || true
+
   build:
     commands:
-      - echo "[build] sanity check Dockerfile path"
-      # Dockerfile がリポジトリ直下でない場合は DOCKER_CONTEXT / DOCKERFILE を環境変数で渡せるように
-      - DOCKER_CONTEXT="${DOCKER_CONTEXT:-.}"
-      - DOCKERFILE="${DOCKERFILE:-${DOCKER_CONTEXT}/Dockerfile}"
+      - echo "[build] sanity check Dockerfile path and context"
+      # Dockerfile がリポジトリ直下でない場合でも指定できるよう、予約語を避けた変数名に変更
+      - BUILD_CONTEXT="${BUILD_CONTEXT:-.}"
+      - DOCKERFILE_PATH="${DOCKERFILE_PATH:-${BUILD_CONTEXT}/Dockerfile}"
 
-      - echo "[build] show Dockerfile header"; head -n 5 "${DOCKERFILE}" || true
+      - echo "[build] show Dockerfile header"; head -n 5 "${DOCKERFILE_PATH}" || true
       - echo "[build] check FROM base image"
-      - grep -nE '^FROM ' "${DOCKERFILE}"
+      - grep -nE '^FROM ' "${DOCKERFILE_PATH}" || { echo "Dockerfile not found or no FROM line"; exit 1; }
 
-      - echo "[build] docker build with explicit -f and --pull"
-      - docker build --pull -f "${DOCKERFILE}" -t "${ECR_REPO}:${IMAGE_TAG}" "${DOCKER_CONTEXT}"
+      # 旧ベースの使用を検知したら即失敗（見落とし防止）
+      - if grep -qE '^FROM[[:space:]]+python:3\.11-slim' "${DOCKERFILE_PATH}"; then echo "ERROR: Dockerfile still uses Docker Hub base image"; exit 1; fi
+
+      - echo "[build] docker build with explicit -f and --pull (context=${BUILD_CONTEXT})"
+      - docker build --pull -f "${DOCKERFILE_PATH}" -t "${ECR_REPO}:${IMAGE_TAG}" "${BUILD_CONTEXT}"
       - docker tag "${ECR_REPO}:${IMAGE_TAG}" "${IMAGE_URI}"
 
   post_build:
     commands:
-      - set -euo pipefail
+      # /bin/sh では pipefail 非対応
+      - set -eu
       - echo "[post_build] push"
       - docker push "${IMAGE_URI}"
 
