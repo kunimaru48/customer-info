@@ -2,73 +2,52 @@ version: 0.2
 
 env:
   variables:
-    ECR_REPO: "customer-info/app"   # ECR リポジトリ名（安全のためクォート）
+    ECR_REPO: "customer-info/app"
   git-credential-helper: yes
 
 phases:
-  install:
-    commands:
-      - echo "[install] $(date)"
-      - if ! command -v jq >/dev/null 2>&1; then (apt-get update && apt-get install -y jq) || (yum install -y jq) || true; fi
-
   pre_build:
     commands:
       - echo "[pre_build] ECR login"
       - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
       - REGION="${AWS_DEFAULT_REGION:-ap-northeast-1}"
-      - aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com
+      - aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
 
       - echo "[pre_build] resolve tags"
       - COMMIT_SHA=$(echo "${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual}" | cut -c1-7)
-      - BRANCH_NAME=${CODEBUILD_WEBHOOK_BASE_REF##*/}; BRANCH_NAME=${BRANCH_NAME:-${CODEBUILD_SOURCE_VERSION}}
-      - BRANCH_NAME=${BRANCH_NAME##*/}
+      - BRANCH_NAME=${CODEBUILD_WEBHOOK_BASE_REF##*/}; BRANCH_NAME=${BRANCH_NAME:-${CODEBUILD_SOURCE_VERSION}}; BRANCH_NAME=${BRANCH_NAME##*/}
       - SAFE_BRANCH=$(echo "${BRANCH_NAME:-manual}" | tr '/_' '-' | tr -cd '[:alnum:]-')
       - TS=$(date +%Y%m%d%H%M%S)
-      - IMAGE_TAG=${SAFE_BRANCH}-${COMMIT_SHA}-${TS}
+      - IMAGE_TAG="${SAFE_BRANCH}-${COMMIT_SHA}-${TS}"
       - IMAGE_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}"
       - echo "IMAGE_URI=${IMAGE_URI}"
 
-      # （重要）Docker 環境の可用性＆buildx 初期化
-      - echo "[pre_build] check docker availability"
-      - docker version || true
-      - docker info || true
-      - echo "[pre_build] DOCKER_* env (for debugging)"; env | grep '^DOCKER_' || true
-      - echo "[pre_build] docker context/buildx"; docker context ls || true; docker buildx ls || true
-      - |
-        if ! docker buildx inspect cbuilder >/dev/null 2>&1; then
-          echo "[pre_build] creating buildx builder 'cbuilder'..."
-          docker buildx create --name cbuilder --use || { echo "buildx create failed"; exit 1; }
-        else
-          docker buildx use cbuilder
-        fi
-      - docker buildx ls || true
-
   build:
     commands:
-      - echo "[build] sanity check Dockerfile path and context"
-      # Dockerfile がリポジトリ直下でない場合でも指定できるよう、予約語を避けた変数名に変更
-      - BUILD_CONTEXT="${BUILD_CONTEXT:-.}"
-      - DOCKERFILE_PATH="${DOCKERFILE_PATH:-${BUILD_CONTEXT}/Dockerfile}"
+      - set -e
+      - echo "[build] docker build"
+      - CTX="${BUILD_CONTEXT:-.}"
+      - DOCKERFILE_PATH="${DOCKERFILE_PATH:-${CTX}/Dockerfile}"
+      - unset DOCKER_CONTEXT DOCKER_HOST DOCKER_TLS_VERIFY DOCKER_CERT_PATH || true
 
-      - echo "[build] show Dockerfile header"; head -n 5 "${DOCKERFILE_PATH}" || true
-      - echo "[build] check FROM base image"
-      - grep -nE '^FROM ' "${DOCKERFILE_PATH}" || { echo "Dockerfile not found or no FROM line"; exit 1; }
-
-      # 旧ベースの使用を検知したら即失敗（見落とし防止）
+      - echo "[build] Dockerfile header:"; head -n 5 "${DOCKERFILE_PATH}" || true
+      - grep -nE '^FROM ' "${DOCKERFILE_PATH}"
       - if grep -qE '^FROM[[:space:]]+python:3\.11-slim' "${DOCKERFILE_PATH}"; then echo "ERROR: Dockerfile still uses Docker Hub base image"; exit 1; fi
 
-      - echo "[build] docker build with explicit -f and --pull (context=${BUILD_CONTEXT})"
-      - docker build --pull -f "${DOCKERFILE_PATH}" -t "${ECR_REPO}:${IMAGE_TAG}" "${BUILD_CONTEXT}"
+      - docker build --pull -f "${DOCKERFILE_PATH}" -t "${ECR_REPO}:${IMAGE_TAG}" "${CTX}"
       - docker tag "${ECR_REPO}:${IMAGE_TAG}" "${IMAGE_URI}"
 
   post_build:
     commands:
-      # /bin/sh では pipefail 非対応
       - set -eu
-      - echo "[post_build] push"
+      - echo "[post_build] push image"
       - docker push "${IMAGE_URI}"
 
-      - echo "[post_build] generate CodeDeploy artifacts (appspec.yaml, taskdef.json)"
+      - echo "[post_build] validate EXEC_ROLE_ARN"
+      - test -n "${EXEC_ROLE_ARN:-}" || { echo "EXEC_ROLE_ARN is empty; set it in CodeBuild env"; exit 1; }
+      - REGION_OUT="${REGION:-${AWS_DEFAULT_REGION:-ap-northeast-1}}"
+
+      - echo "[post_build] write appspec.yaml & taskdef.json"
       - |
         cat > appspec.yaml <<'APP'
         version: 1
@@ -82,25 +61,25 @@ phases:
                   ContainerPort: 80
         APP
       - |
-        cat > taskdef.json <<'JSON'
+        cat > taskdef.json <<EOF
         {
           "family": "customer-info",
           "networkMode": "awsvpc",
           "requiresCompatibilities": ["FARGATE"],
           "cpu": "256",
           "memory": "512",
-          "executionRoleArn": "REPLACE_EXEC_ROLE_ARN",
+          "executionRoleArn": "${EXEC_ROLE_ARN}",
           "containerDefinitions": [
             {
               "name": "app",
-              "image": "REPLACE_ME",
+              "image": "${IMAGE_URI}",
               "essential": true,
               "portMappings": [{ "containerPort": 80, "protocol": "tcp" }],
               "logConfiguration": {
                 "logDriver": "awslogs",
                 "options": {
                   "awslogs-group": "/ecs/customer-info",
-                  "awslogs-region": "ap-northeast-1",
+                  "awslogs-region": "${REGION_OUT}",
                   "awslogs-stream-prefix": "ecs"
                 }
               },
@@ -120,49 +99,13 @@ phases:
             }
           ]
         }
-        JSON
+        EOF
 
-      - echo "[post_build] sanity check"
       - ls -l appspec.yaml taskdef.json
-      - jq --version || { echo "jq not found"; exit 1; }
-      - echo "IMAGE_URI=${IMAGE_URI}"
-      - echo "EXEC_ROLE_ARN=${EXEC_ROLE_ARN:-<empty>}"
-      - echo "REGION=${REGION:-${AWS_DEFAULT_REGION:-<empty>}}"
-      - jq -e . taskdef.json > /dev/null  # JSONとして正しいか検証
-
-      # EXEC_ROLE_ARN が空なら明示的に失敗（後段で曖昧に落ちないように）
-      - test -n "${EXEC_ROLE_ARN:-}" || { echo "EXEC_ROLE_ARN is empty; set it in CodeBuild env"; exit 1; }
-
-      - echo "[post_build] inject image into containerDefinitions"
-      - |
-        jq --arg IMG "${IMAGE_URI}" \
-           '(.containerDefinitions[] | select(.name=="app") | .image) = $IMG' \
-           taskdef.json > taskdef.tmp && mv taskdef.tmp taskdef.json
-      - jq -e . taskdef.json > /dev/null
-
-      - echo "[post_build] set executionRoleArn"
-      - |
-        jq --arg EXEC "${EXEC_ROLE_ARN}" \
-           '.executionRoleArn = $EXEC' \
-           taskdef.json > taskdef.tmp && mv taskdef.tmp taskdef.json
-      - jq -e . taskdef.json > /dev/null
-
-      - echo "[post_build] set awslogs-region"
-      - |
-        jq --arg REGION "${REGION:-${AWS_DEFAULT_REGION:-ap-northeast-1}}" \
-           '.containerDefinitions[0].logConfiguration.options["awslogs-region"] = $REGION' \
-           taskdef.json > taskdef.tmp && mv taskdef.tmp taskdef.json
-      - jq -e . taskdef.json > /dev/null
-
-      - echo "[post_build] preview taskdef.json"
-      - head -n 60 taskdef.json
+      - head -n 40 taskdef.json
 
 artifacts:
   files:
     - appspec.yaml
     - taskdef.json
   discard-paths: yes
-
-cache:
-  paths:
-    - '/root/.cache/pip/**/*'
