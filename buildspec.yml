@@ -1,0 +1,113 @@
+version: 0.2
+
+env:
+  variables:
+    ECR_REPO: customer-info/app   # ECR リポジトリ名
+  git-credential-helper: yes
+
+phases:
+  install:
+    commands:
+      - echo "[install] $(date)"
+      - if ! command -v jq >/dev/null 2>&1; then (apt-get update && apt-get install -y jq) || (yum install -y jq) || true; fi
+
+  pre_build:
+    commands:
+      - echo "[pre_build] ECR login"
+      - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - REGION=${AWS_DEFAULT_REGION:-ap-northeast-1}
+      - aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com
+
+      - echo "[pre_build] resolve tags"
+      - COMMIT_SHA=$(echo "${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual}" | cut -c1-7)
+      - BRANCH_NAME=${CODEBUILD_WEBHOOK_BASE_REF##*/}; BRANCH_NAME=${BRANCH_NAME:-${CODEBUILD_SOURCE_VERSION}}
+      - BRANCH_NAME=${BRANCH_NAME##*/}
+      - SAFE_BRANCH=$(echo "${BRANCH_NAME:-manual}" | tr '/_' '-' | tr -cd '[:alnum:]-')
+      - TS=$(date +%Y%m%d%H%M%S)
+      - IMAGE_TAG=${SAFE_BRANCH}-${COMMIT_SHA}-${TS}
+      - IMAGE_URI=${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}
+      - echo "IMAGE_URI=${IMAGE_URI}"
+
+  build:
+    commands:
+      - echo "[build] docker build"
+      - docker build -t ${ECR_REPO}:${IMAGE_TAG} .
+      - docker tag ${ECR_REPO}:${IMAGE_TAG} ${IMAGE_URI}
+
+  post_build:
+    commands:
+      - echo "[post_build] push"
+      - docker push ${IMAGE_URI}
+
+      - echo "[post_build] prepare CodeDeploy artifacts"
+      - |
+        cat > appspec.yaml <<'APP'
+        version: 1
+        Resources:
+          - TargetService:
+              Type: AWS::ECS::Service
+              Properties:
+                TaskDefinition: taskdef.json
+                LoadBalancerInfo:
+                  ContainerName: app
+                  ContainerPort: 80
+        APP
+
+      - |
+        cat > taskdef.json <<'JSON'
+        {
+          "family": "customer-info",
+          "networkMode": "awsvpc",
+          "requiresCompatibilities": ["FARGATE"],
+          "cpu": "256",
+          "memory": "512",
+          "executionRoleArn": "REPLACE_EXEC_ROLE_ARN",
+          "containerDefinitions": [
+            {
+              "name": "app",
+              "image": "REPLACE_ME",
+              "essential": true,
+              "portMappings": [{ "containerPort": 80, "protocol": "tcp" }],
+              "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                  "awslogs-group": "/ecs/customer-info",
+                  "awslogs-region": "ap-northeast-1",
+                  "awslogs-stream-prefix": "ecs"
+                }
+              },
+              "environment": [
+                { "name": "DB_HOST", "value": "REPLACE_DB_HOST" },
+                { "name": "DB_USER", "value": "REPLACE_DB_USER" },
+                { "name": "DB_PASSWORD", "value": "REPLACE_DB_PASSWORD" },
+                { "name": "DB_NAME", "value": "REPLACE_DB_NAME" }
+              ],
+              "healthCheck": {
+                "command": ["CMD-SHELL", "curl -f http://localhost/healthcheck || exit 1"],
+                "interval": 30,
+                "timeout": 5,
+                "retries": 3,
+                "startPeriod": 10
+              }
+            }
+          ]
+        }
+        JSON
+
+      # BuildStack から渡される EXEC_ROLE_ARN / REGION を注入（CodeBuild 環境変数）
+      - jq --arg IMG "${IMAGE_URI}" --arg EXEC "${EXEC_ROLE_ARN}" --arg REGION "$REGION" \
+           '.containerDefinitions |= (map(if .name=="app" then .image=$IMG else . end))
+            | .executionRoleArn=$EXEC
+            | .containerDefinitions[0].logConfiguration.options["awslogs-region"]=$REGION' \
+           taskdef.json > taskdef.tmp && mv taskdef.tmp taskdef.json
+
+artifacts:
+  files:
+    - appspec.yaml
+    - taskdef.json
+  discard-paths: yes
+
+cache:
+  paths:
+    - '/root/.cache/pip/**/*'
+
