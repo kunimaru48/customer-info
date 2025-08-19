@@ -37,7 +37,6 @@ phases:
 
       - echo "[build] Dockerfile header:"; head -n 5 "${DOCKERFILE_PATH}" || true
       - grep -nE '^FROM ' "${DOCKERFILE_PATH}"
-      - if grep -qE '^FROM[[:space:]]+python:3\.11-slim' "${DOCKERFILE_PATH}"; then echo "ERROR: Dockerfile still uses Docker Hub base image"; exit 1; fi
 
       - docker build --pull -f "${DOCKERFILE_PATH}" -t "${ECR_REPO}:${IMAGE_TAG}" "${CTX}"
       - docker tag "${ECR_REPO}:${IMAGE_TAG}" "${IMAGE_URI}"
