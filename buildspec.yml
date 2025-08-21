@@ -48,7 +48,7 @@ phases:
 
       - echo "[post_build] write appspec.yaml & taskdef.json"
       - |
-        cat > appspec.yaml <<EOF
+        cat > appspec.yaml << 'APPSPEC'
         version: 0.0
         Resources:
           - TargetService:
@@ -58,7 +58,7 @@ phases:
                 LoadBalancerInfo:
                   ContainerName: "app"
                   ContainerPort: 80
-        EOF
+        APPSPEC
       - |
         cat > taskdef.json <<EOF
         {
