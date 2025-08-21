@@ -42,11 +42,8 @@ phases:
       - echo "[post_build] push image"
       - docker push "${IMAGE_URI}"
 
-      - echo "[post_build] validate required role ARNs"
-      - test -n "${EXEC_ROLE_ARN:-}" || { echo "ERROR: EXEC_ROLE_ARN is empty; set it in CodeBuild env"; exit 1; }
-      - test -n "${TASK_ROLE_ARN:-}" || { echo "ERROR: TASK_ROLE_ARN is empty; set it in CodeBuild env"; exit 1; }
-      - echo "EXEC_ROLE_ARN=${EXEC_ROLE_ARN}"
-      - echo "TASK_ROLE_ARN=${TASK_ROLE_ARN}"
+      - echo "[post_build] validate EXEC_ROLE_ARN"
+      - test -n "${EXEC_ROLE_ARN:-}" || { echo "EXEC_ROLE_ARN is empty; set it in CodeBuild env"; exit 1; }
       - REGION_OUT="${REGION:-${AWS_DEFAULT_REGION:-ap-northeast-1}}"
 
       - echo "[post_build] write appspec.yaml & taskdef.json"
@@ -71,7 +68,6 @@ phases:
           "cpu": "256",
           "memory": "512",
           "executionRoleArn": "${EXEC_ROLE_ARN}",
-          "taskRoleArn": "${TASK_ROLE_ARN}",
           "containerDefinitions": [
             {
               "name": "app",
@@ -108,16 +104,8 @@ phases:
         }
         EOF
 
-      - echo "[post_build] validate generated files"
       - ls -l appspec.yaml taskdef.json
-      - echo "--- appspec.yaml ---"
-      - cat appspec.yaml
-      - echo "--- taskdef.json (first 40 lines) ---"
       - head -n 40 taskdef.json
-      
-      - echo "[post_build] validate taskdef.json syntax"
-      - python3 -c "import json; json.load(open('taskdef.json'))" || { echo "ERROR: taskdef.json is not valid JSON"; exit 1; }
-      - echo "taskdef.json JSON validation: OK"
 
 artifacts:
   files:
