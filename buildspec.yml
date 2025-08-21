@@ -12,6 +12,7 @@ phases:
       - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
       - REGION="${AWS_DEFAULT_REGION:-ap-northeast-1}"
       - aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
+
       - echo "[pre_build] resolve tags"
       - COMMIT_SHA=$(echo "${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual}" | cut -c1-7)
       - BRANCH_NAME=${CODEBUILD_WEBHOOK_BASE_REF##*/}; BRANCH_NAME=${BRANCH_NAME:-${CODEBUILD_SOURCE_VERSION}}; BRANCH_NAME=${BRANCH_NAME##*/}
@@ -28,8 +29,10 @@ phases:
       - CTX="${BUILD_CONTEXT:-.}"
       - DOCKERFILE_PATH="${DOCKERFILE_PATH:-${CTX}/Dockerfile}"
       - unset DOCKER_CONTEXT DOCKER_HOST DOCKER_TLS_VERIFY DOCKER_CERT_PATH || true
+
       - echo "[build] Dockerfile header:"; head -n 5 "${DOCKERFILE_PATH}" || true
       - grep -nE '^FROM ' "${DOCKERFILE_PATH}"
+
       - docker build --pull -f "${DOCKERFILE_PATH}" -t "${ECR_REPO}:${IMAGE_TAG}" "${CTX}"
       - docker tag "${ECR_REPO}:${IMAGE_TAG}" "${IMAGE_URI}"
 
@@ -38,13 +41,16 @@ phases:
       - set -eu
       - echo "[post_build] push image"
       - docker push "${IMAGE_URI}"
+
       - echo "[post_build] validate required role ARNs"
       - test -n "${EXEC_ROLE_ARN:-}" || { echo "ERROR: EXEC_ROLE_ARN is empty; set it in CodeBuild env"; exit 1; }
       - test -n "${TASK_ROLE_ARN:-}" || { echo "ERROR: TASK_ROLE_ARN is empty; set it in CodeBuild env"; exit 1; }
+      - EXEC_ROLE_ARN="$(echo "$EXEC_ROLE_ARN" | xargs)"; TASK_ROLE_ARN="$(echo "$TASK_ROLE_ARN" | xargs)"
       - echo "EXEC_ROLE_ARN=${EXEC_ROLE_ARN}"
       - echo "TASK_ROLE_ARN=${TASK_ROLE_ARN}"
       - REGION_OUT="${REGION:-${AWS_DEFAULT_REGION:-ap-northeast-1}}"
-      - echo "[post_build] write appspec.yaml"
+
+      - echo "[post_build] write appspec.yaml & taskdef.json"
       - |
         cat > appspec.yaml << 'APPSPEC'
         version: 0.0
@@ -57,28 +63,27 @@ phases:
                   ContainerName: "app"
                   ContainerPort: 80
         APPSPEC
-      - echo "[post_build] write taskdef.json"
       - |
-        cat > taskdef.json << 'TASKDEF'
+        cat > taskdef.json <<EOF
         {
           "family": "customer-info-task",
           "networkMode": "awsvpc",
           "requiresCompatibilities": ["FARGATE"],
           "cpu": "256",
           "memory": "512",
-          "executionRoleArn": "REPLACE_EXEC_ROLE_ARN",
-          "taskRoleArn": "REPLACE_TASK_ROLE_ARN",
+          "executionRoleArn": "${EXEC_ROLE_ARN}",
+          "taskRoleArn": "${TASK_ROLE_ARN}",
           "containerDefinitions": [
             {
               "name": "app",
-              "image": "REPLACE_IMAGE_URI",
+              "image": "${IMAGE_URI}",
               "essential": true,
               "portMappings": [{ "containerPort": 80, "protocol": "tcp" }],
               "logConfiguration": {
                 "logDriver": "awslogs",
                 "options": {
                   "awslogs-group": "/ecs/customer-info",
-                  "awslogs-region": "REPLACE_REGION",
+                  "awslogs-region": "${REGION_OUT}",
                   "awslogs-stream-prefix": "customer-info"
                 }
               },
@@ -102,18 +107,15 @@ phases:
             "cpuArchitecture": "X86_64"
           }
         }
-        TASKDEF
-      - echo "[post_build] replace placeholders in taskdef.json"
-      - sed -i "s|REPLACE_EXEC_ROLE_ARN|${EXEC_ROLE_ARN}|g" taskdef.json
-      - sed -i "s|REPLACE_TASK_ROLE_ARN|${TASK_ROLE_ARN}|g" taskdef.json
-      - sed -i "s|REPLACE_IMAGE_URI|${IMAGE_URI}|g" taskdef.json
-      - sed -i "s|REPLACE_REGION|${REGION_OUT}|g" taskdef.json
+        EOF
+
       - echo "[post_build] validate generated files"
       - ls -l appspec.yaml taskdef.json
       - echo "--- appspec.yaml ---"
       - cat appspec.yaml
       - echo "--- taskdef.json (first 40 lines) ---"
       - head -n 40 taskdef.json
+
       - echo "[post_build] validate taskdef.json syntax"
       - python3 -c "import json; json.load(open('taskdef.json'))" || { echo "ERROR: taskdef.json is not valid JSON"; exit 1; }
       - echo "taskdef.json JSON validation: OK"
