@@ -1,4 +1,3 @@
-########## buildspec.yml ##########
 version: 0.2
 
 env:
@@ -49,17 +48,17 @@ phases:
 
       - echo "[post_build] write appspec.yaml & taskdef.json"
       - |
-        cat > appspec.yaml <<'APP'
-        version: 1
+        cat > appspec.yaml <<EOF
+        version: 0.0
         Resources:
           - TargetService:
               Type: AWS::ECS::Service
               Properties:
-                TaskDefinition: "taskdef.json"
+                TaskDefinition: <TASK_DEFINITION>
                 LoadBalancerInfo:
                   ContainerName: "app"
                   ContainerPort: 80
-        APP
+        EOF
       - |
         cat > taskdef.json <<EOF
         {
