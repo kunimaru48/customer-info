@@ -8,7 +8,7 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app/ /app/
-COPY nginx/nginx.conf /etc/nginx/sites-enabled/default
+COPY app.py /app/app.py
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 CMD service nginx start && gunicorn -b 127.0.0.1:5000 app:app
