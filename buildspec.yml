@@ -58,6 +58,9 @@ phases:
                 LoadBalancerInfo:
                   ContainerName: "app"
                   ContainerPort: 80
+                  TargetGroupInfoList:
+                    - Name: AlbSta-TgBlu-USIY7VY2625T
+                    - Name: AlbSta-TgGre-HSK3NRYZVY7X
         APPSPEC
       - |
         cat > taskdef.json <<EOF
