@@ -90,11 +90,11 @@ phases:
                 { "name": "DB_NAME", "value": "REPLACE_DB_NAME" }
               ],
               "healthCheck": {
-                "command": ["CMD-SHELL", "awk 'NR>1 && $2 ~ /:0050$/ && $4==\"0A\"{f=1} END{exit f?0:1}' /proc/net/tcp"],
+                "command": ["CMD-SHELL", "curl -f http://localhost:80/ || exit 1"],
                 "interval": 30,
                 "timeout": 5,
                 "retries": 3,
-                "startPeriod": 10
+                "startPeriod": 15
               }
             }
           ],
